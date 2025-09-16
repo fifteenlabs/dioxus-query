@@ -183,18 +183,18 @@ impl<Q: MutationCapability> MutationsStorage<Q> {
         let mut storage_clone = self.storage;
         let mut storage = self.storage.write();
 
-        let mutation_data = storage.get_mut(&mutation).unwrap();
-
-        // Spawn clean up task if there no more reactive contexts
-        if mutation_data.reactive_contexts.lock().unwrap().is_empty() {
-            *mutation_data.clean_task.borrow_mut() = spawn_forever(async move {
-                // Wait as long as the stale time is configured
-                time::sleep(mutation.clean_time).await;
-
-                // Finally clear the mutation
-                let mut storage = storage_clone.write();
-                storage.remove(&mutation);
-            });
+        if let Some(mutation_data) = storage.get_mut(&mutation) {
+            // Spawn clean up task if there no more reactive contexts
+            if mutation_data.reactive_contexts.lock().unwrap().is_empty() {
+                *mutation_data.clean_task.borrow_mut() = spawn_forever(async move {
+                    // Wait as long as the stale time is configured
+                    time::sleep(mutation.clean_time).await;
+    
+                    // Finally clear the mutation
+                    let mut storage = storage_clone.write();
+                    storage.remove(&mutation);
+                });
+            }
         }
     }
 
