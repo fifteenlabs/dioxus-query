@@ -371,6 +371,54 @@ impl<Q: QueryCapability> QueriesStorage<Q> {
         Self::run_queries(&matching_queries).await
     }
 
+    /// Try to invalidate all queries in storage without panicking if context doesn't exist.
+    /// Returns true if the context was found and queries were invalidated, false otherwise.
+    pub async fn try_invalidate_all() -> bool {
+        let Some(storage) = try_consume_context::<QueriesStorage<Q>>() else {
+            return false;
+        };
+
+        // Get all the queries
+        let matching_queries = storage
+            .storage
+            .read()
+            .clone()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let matching_queries = matching_queries
+            .iter()
+            .map(|(q, d)| (q, d))
+            .collect::<Vec<_>>();
+
+        // Invalidate the queries
+        Self::run_queries(&matching_queries).await;
+        true
+    }
+
+    /// Try to invalidate queries matching the given keys without panicking if context doesn't exist.
+    /// Returns true if the context was found and queries were invalidated, false otherwise.
+    pub async fn try_invalidate_matching(matching_keys: Q::Keys) -> bool {
+        let Some(storage) = try_consume_context::<QueriesStorage<Q>>() else {
+            return false;
+        };
+
+        // Get those queries that match
+        let mut matching_queries = Vec::new();
+        for (query, data) in storage.storage.read().iter() {
+            if query.query.matches(&matching_keys) {
+                matching_queries.push((query.clone(), data.clone()));
+            }
+        }
+        let matching_queries = matching_queries
+            .iter()
+            .map(|(q, d)| (q, d))
+            .collect::<Vec<_>>();
+
+        // Invalidate the queries
+        Self::run_queries(&matching_queries).await;
+        true
+    }
+
     async fn run_queries(queries: &[(&Query<Q>, &QueryData<Q>)]) {
         let tasks = FuturesUnordered::new();
 
