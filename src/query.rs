@@ -44,6 +44,39 @@ where
     fn matches(&self, _keys: &Self::Keys) -> bool {
         true
     }
+
+    /// Default stale time for this query type.
+    ///
+    /// This is how long the data is considered fresh. If a query subscriber is mounted
+    /// and the data is stale, it will re-run the query.
+    ///
+    /// Defaults to [Duration::ZERO], meaning data is marked stale immediately.
+    /// You can override this in your implementation to set a custom default, and users
+    /// can still override it per-use with [Query::stale_time].
+    fn default_stale_time(&self) -> Duration {
+        Duration::ZERO
+    }
+
+    /// Default clean time for this query type.
+    ///
+    /// This is how long the data is kept cached after there are no more query subscribers.
+    ///
+    /// Defaults to `5min`. You can override this in your implementation to set a custom default,
+    /// and users can still override it per-use with [Query::clean_time].
+    fn default_clean_time(&self) -> Duration {
+        Duration::from_secs(5 * 60)
+    }
+
+    /// Default interval time for this query type.
+    ///
+    /// This is how often the query reruns automatically in the background.
+    ///
+    /// Defaults to [Duration::MAX], meaning it never re-runs automatically.
+    /// You can override this in your implementation to set a custom default, and users
+    /// can still override it per-use with [Query::interval_time].
+    fn default_interval_time(&self) -> Duration {
+        Duration::MAX
+    }
 }
 
 pub enum QueryStateData<Q: QueryCapability> {
@@ -465,11 +498,13 @@ pub struct GetQuery<Q: QueryCapability> {
 
 impl<Q: QueryCapability> GetQuery<Q> {
     pub fn new(keys: Q::Keys, query: Q) -> Self {
+        let stale_time = query.default_stale_time();
+        let clean_time = query.default_clean_time();
         Self {
             query,
             keys,
-            stale_time: Duration::ZERO,
-            clean_time: Duration::ZERO,
+            stale_time,
+            clean_time,
         }
     }
     /// For how long is the data considered stale. If a query subscriber is mounted and the data is stale, it will re run the query.
@@ -531,13 +566,16 @@ impl<Q: QueryCapability> Hash for Query<Q> {
 
 impl<Q: QueryCapability> Query<Q> {
     pub fn new(keys: Q::Keys, query: Q) -> Self {
+        let stale_time = query.default_stale_time();
+        let clean_time = query.default_clean_time();
+        let interval_time = query.default_interval_time();
         Self {
             query,
             keys,
             enabled: true,
-            stale_time: Duration::ZERO,
-            clean_time: Duration::from_secs(5 * 60),
-            interval_time: Duration::MAX,
+            stale_time,
+            clean_time,
+            interval_time,
         }
     }
 
