@@ -653,10 +653,15 @@ impl<Q: QueryCapability> UseQuery<Q> {
     /// If you want a **non-subscribing** method have a look at [UseQuery::peek].
     pub fn read(&self) -> QueryReader<Q> {
         let storage = consume_context::<QueriesStorage<Q>>();
+
+        // Read the query FIRST to avoid borrow conflicts
+        // (reading may trigger recompute which needs to write to storage)
+        let query = self.query.read().clone();
+
         let query_data = storage
             .storage
             .peek_unchecked()
-            .get(&self.query.peek())
+            .get(&query)
             .cloned()
             .unwrap();
 
@@ -700,8 +705,12 @@ impl<Q: QueryCapability> UseQuery<Q> {
             ::warnings::Allow::new(warnings::signal_write_in_component_body::ID);
 
         let storage = consume_context::<QueriesStorage<Q>>();
+
+        // Read the query FIRST to avoid borrow conflicts
+        let query = self.query.read().clone();
+
         let mut storage = storage.storage.write_unchecked();
-        let query_data = storage.get_mut(&self.query.peek()).unwrap();
+        let query_data = storage.get_mut(&query).unwrap();
 
         // Subscribe if possible
         if let Some(reactive_context) = ReactiveContext::current() {
@@ -738,7 +747,7 @@ impl<Q: QueryCapability> UseQuery<Q> {
     pub async fn invalidate_async(&self) -> QueryReader<Q> {
         let storage = consume_context::<QueriesStorage<Q>>();
 
-        let query = self.query.peek().clone();
+        let query = self.query.read().clone();  // ✅ FIX: Use read()
         let query_data = storage
             .storage
             .peek_unchecked()
@@ -760,7 +769,7 @@ impl<Q: QueryCapability> UseQuery<Q> {
     pub fn invalidate(&self) {
         let storage = consume_context::<QueriesStorage<Q>>();
 
-        let query = self.query.peek().clone();
+        let query = self.query.read().clone();  // ✅ FIX: Use read()
         let query_data = storage
             .storage
             .peek_unchecked()
