@@ -280,7 +280,13 @@ impl<Q: QueryCapability> QueriesStorage<Q> {
         let mut storage_clone = self.storage;
         let mut storage = self.storage.write();
 
-        let query_data = storage.get_mut(&query).unwrap();
+        let query_data = match storage.get_mut(&query) {
+            Some(data) => data,
+            None => {
+                // Query was already removed from storage, nothing to do
+                return;
+            }
+        };
 
         // Cancel interval task
         if let Some((_, interval_task)) = query_data.interval_task.take() {
