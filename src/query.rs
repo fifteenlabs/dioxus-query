@@ -491,6 +491,27 @@ impl<Q: QueryCapability> QueriesStorage<Q> {
         }
     }
 
+    /// Try to get the cached query value without panicking if context doesn't exist.
+    /// Returns `None` if the context doesn't exist, the query is not cached, or not settled.
+    pub fn try_get_query_value(query: Query<Q>) -> Option<Result<Q::Ok, Q::Err>>
+    where
+        Q::Ok: Clone,
+        Q::Err: Clone,
+    {
+        let storage = try_consume_context::<QueriesStorage<Q>>()?;
+
+        // Get the query data if it exists in storage
+        let query_data = storage.storage.peek_unchecked().get(&query).cloned()?;
+
+        // Return the value if it's settled
+        let state = query_data.state.borrow();
+        match &*state {
+            QueryStateData::Settled { res, .. } => Some(res.clone()),
+            QueryStateData::Loading { res: Some(res) } => Some(res.clone()),
+            _ => None,
+        }
+    }
+
     /// Set the query value in-memory without running the query function.
     ///
     /// This is useful for optimistic updates where you want to immediately update
@@ -529,6 +550,32 @@ impl<Q: QueryCapability> QueriesStorage<Q> {
         for reactive_context in query_data.reactive_contexts.lock().unwrap().iter() {
             reactive_context.mark_dirty();
         }
+    }
+
+    /// Try to set the query value without panicking if context doesn't exist.
+    /// Returns `true` if the value was set successfully, `false` if the context or query doesn't exist.
+    pub fn try_set_query_value(query: Query<Q>, value: Result<Q::Ok, Q::Err>) -> bool {
+        let Some(storage) = try_consume_context::<QueriesStorage<Q>>() else {
+            return false;
+        };
+
+        // Get the query data if it exists in storage
+        let Some(query_data) = storage.storage.peek_unchecked().get(&query).cloned() else {
+            return false;
+        };
+
+        // Set the state to Settled with the provided value
+        *query_data.state.borrow_mut() = QueryStateData::Settled {
+            res: value,
+            settlement_instant: Instant::now(),
+        };
+
+        // Mark all reactive contexts as dirty to trigger re-renders
+        for reactive_context in query_data.reactive_contexts.lock().unwrap().iter() {
+            reactive_context.mark_dirty();
+        }
+
+        true
     }
 
     async fn run_queries(queries: &[(&Query<Q>, &QueryData<Q>)]) {
