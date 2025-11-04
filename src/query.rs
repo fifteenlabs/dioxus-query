@@ -397,7 +397,8 @@ impl<Q: QueryCapability> QueriesStorage<Q> {
         // Get those queries that match
         let mut matching_queries = Vec::new();
         for (query, data) in storage.storage.read().iter() {
-            if query.query.matches(&matching_keys) {
+            // Check if keys match AND custom matches logic passes
+            if query.keys == matching_keys && query.query.matches(&matching_keys) {
                 matching_queries.push((query.clone(), data.clone()));
             }
         }
@@ -444,7 +445,8 @@ impl<Q: QueryCapability> QueriesStorage<Q> {
         // Get those queries that match
         let mut matching_queries = Vec::new();
         for (query, data) in storage.storage.read().iter() {
-            if query.query.matches(&matching_keys) {
+            // Check if keys match AND custom matches logic passes
+            if query.keys == matching_keys && query.query.matches(&matching_keys) {
                 matching_queries.push((query.clone(), data.clone()));
             }
         }
