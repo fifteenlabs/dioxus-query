@@ -189,7 +189,7 @@ impl<Q: MutationCapability> MutationsStorage<Q> {
                 *mutation_data.clean_task.borrow_mut() = spawn_forever(async move {
                     // Wait as long as the stale time is configured
                     time::sleep(mutation.clean_time).await;
-    
+
                     // Finally clear the mutation
                     let mut storage = storage_clone.write();
                     storage.remove(&mutation);
@@ -257,7 +257,7 @@ pub struct MutationReader<Q: MutationCapability> {
 }
 
 impl<Q: MutationCapability> MutationReader<Q> {
-    pub fn state(&self) -> Ref<MutationStateData<Q>> {
+    pub fn state(&self) -> Ref<'_, MutationStateData<Q>> {
         self.state.borrow()
     }
 }

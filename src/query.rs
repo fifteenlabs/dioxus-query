@@ -625,14 +625,14 @@ pub struct QueryReader<Q: QueryCapability> {
 }
 
 impl<Q: QueryCapability> QueryReader<Q> {
-    pub fn state(&self) -> Ref<QueryStateData<Q>> {
+    pub fn state(&self) -> Ref<'_, QueryStateData<Q>> {
         self.state.borrow()
     }
 
     /// Get the result of the query.
     ///
     /// **This method will panic if the query is not settled.**
-    pub fn as_settled(&self) -> Ref<Result<Q::Ok, Q::Err>> {
+    pub fn as_settled(&self) -> Ref<'_, Result<Q::Ok, Q::Err>> {
         Ref::map(self.state.borrow(), |state| match state {
             QueryStateData::Settled { res, .. } => res,
             _ => panic!("Query is not settled."),
@@ -753,7 +753,7 @@ impl<Q: QueryCapability> UseQuery<Q> {
     pub async fn invalidate_async(&self) -> QueryReader<Q> {
         let storage = consume_context::<QueriesStorage<Q>>();
 
-        let query = self.query.read().clone();  // ✅ FIX: Use read()
+        let query = self.query.read().clone(); // ✅ FIX: Use read()
         let query_data = storage
             .storage
             .peek_unchecked()
@@ -775,7 +775,7 @@ impl<Q: QueryCapability> UseQuery<Q> {
     pub fn invalidate(&self) {
         let storage = consume_context::<QueriesStorage<Q>>();
 
-        let query = self.query.read().clone();  // ✅ FIX: Use read()
+        let query = self.query.read().clone(); // ✅ FIX: Use read()
         let query_data = storage
             .storage
             .peek_unchecked()
@@ -785,6 +785,43 @@ impl<Q: QueryCapability> UseQuery<Q> {
 
         // Run the query
         spawn(async move { QueriesStorage::run_queries(&[(&query, &query_data)]).await });
+    }
+
+    /// Set the query value in-memory without running the query function.
+    ///
+    /// This is useful for optimistic updates where you want to immediately update
+    /// the cached value before the actual query runs. The value will be set as
+    /// a settled state with the current timestamp.
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Optimistically update the cache
+    /// query.set_query_value(Ok(new_value));
+    ///
+    /// // Later, invalidate to fetch the real value from the server
+    /// query.invalidate();
+    /// ```
+    pub fn set_query_value(&self, value: Result<Q::Ok, Q::Err>) {
+        let storage = consume_context::<QueriesStorage<Q>>();
+
+        let query = self.query.read().clone();
+        let query_data = storage
+            .storage
+            .peek_unchecked()
+            .get(&query)
+            .cloned()
+            .unwrap();
+
+        // Set the state to Settled with the provided value
+        *query_data.state.borrow_mut() = QueryStateData::Settled {
+            res: value,
+            settlement_instant: Instant::now(),
+        };
+
+        // Mark all reactive contexts as dirty to trigger re-renders
+        for reactive_context in query_data.reactive_contexts.lock().unwrap().iter() {
+            reactive_context.mark_dirty();
+        }
     }
 }
 
