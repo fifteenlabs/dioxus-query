@@ -458,6 +458,39 @@ impl<Q: QueryCapability> QueriesStorage<Q> {
         true
     }
 
+    /// Get the cached query value without running the query function.
+    ///
+    /// Returns `None` if the query is not in the cache or hasn't been settled yet.
+    /// This is useful for reading cached values without triggering a query execution.
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Check if we have a cached value
+    /// if let Some(cached_value) = QueriesStorage::<MyQuery>::get_query_value(
+    ///     Query::new(keys, query)
+    /// ) {
+    ///     // Use the cached value
+    /// }
+    /// ```
+    pub fn get_query_value(query: Query<Q>) -> Option<Result<Q::Ok, Q::Err>>
+    where
+        Q::Ok: Clone,
+        Q::Err: Clone,
+    {
+        let storage = consume_context::<QueriesStorage<Q>>();
+
+        // Get the query data if it exists in storage
+        let query_data = storage.storage.peek_unchecked().get(&query).cloned()?;
+
+        // Return the value if it's settled
+        let state = query_data.state.borrow();
+        match &*state {
+            QueryStateData::Settled { res, .. } => Some(res.clone()),
+            QueryStateData::Loading { res: Some(res) } => Some(res.clone()),
+            _ => None,
+        }
+    }
+
     /// Set the query value in-memory without running the query function.
     ///
     /// This is useful for optimistic updates where you want to immediately update
