@@ -458,6 +458,46 @@ impl<Q: QueryCapability> QueriesStorage<Q> {
         true
     }
 
+    /// Set the query value in-memory without running the query function.
+    ///
+    /// This is useful for optimistic updates where you want to immediately update
+    /// the cached value before the actual query runs. The value will be set as
+    /// a settled state with the current timestamp.
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Optimistically update the cache
+    /// QueriesStorage::<MyQuery>::set_query_value(
+    ///     Query::new(keys, query),
+    ///     Ok(new_value)
+    /// );
+    ///
+    /// // Later, invalidate to fetch the real value from the server
+    /// QueriesStorage::<MyQuery>::invalidate_matching(keys).await;
+    /// ```
+    pub fn set_query_value(query: Query<Q>, value: Result<Q::Ok, Q::Err>) {
+        let storage = consume_context::<QueriesStorage<Q>>();
+
+        // Get the query data if it exists in storage
+        let query_data = storage
+            .storage
+            .peek_unchecked()
+            .get(&query)
+            .cloned()
+            .unwrap();
+
+        // Set the state to Settled with the provided value
+        *query_data.state.borrow_mut() = QueryStateData::Settled {
+            res: value,
+            settlement_instant: Instant::now(),
+        };
+
+        // Mark all reactive contexts as dirty to trigger re-renders
+        for reactive_context in query_data.reactive_contexts.lock().unwrap().iter() {
+            reactive_context.mark_dirty();
+        }
+    }
+
     async fn run_queries(queries: &[(&Query<Q>, &QueryData<Q>)]) {
         let tasks = FuturesUnordered::new();
 
@@ -785,43 +825,6 @@ impl<Q: QueryCapability> UseQuery<Q> {
 
         // Run the query
         spawn(async move { QueriesStorage::run_queries(&[(&query, &query_data)]).await });
-    }
-
-    /// Set the query value in-memory without running the query function.
-    ///
-    /// This is useful for optimistic updates where you want to immediately update
-    /// the cached value before the actual query runs. The value will be set as
-    /// a settled state with the current timestamp.
-    ///
-    /// # Example
-    /// ```ignore
-    /// // Optimistically update the cache
-    /// query.set_query_value(Ok(new_value));
-    ///
-    /// // Later, invalidate to fetch the real value from the server
-    /// query.invalidate();
-    /// ```
-    pub fn set_query_value(&self, value: Result<Q::Ok, Q::Err>) {
-        let storage = consume_context::<QueriesStorage<Q>>();
-
-        let query = self.query.read().clone();
-        let query_data = storage
-            .storage
-            .peek_unchecked()
-            .get(&query)
-            .cloned()
-            .unwrap();
-
-        // Set the state to Settled with the provided value
-        *query_data.state.borrow_mut() = QueryStateData::Settled {
-            res: value,
-            settlement_instant: Instant::now(),
-        };
-
-        // Mark all reactive contexts as dirty to trigger re-renders
-        for reactive_context in query_data.reactive_contexts.lock().unwrap().iter() {
-            reactive_context.mark_dirty();
-        }
     }
 }
 
