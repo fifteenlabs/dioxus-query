@@ -1178,11 +1178,13 @@ impl<Q: QueryCapability> UseQuery<Q> {
 
     /// Invalidate this query and await its result.
     ///
+    /// Uses the loading strategy configured on the query via `.loading_strategy()`.
+    ///
     /// For a `sync` version use [UseQuery::invalidate].
     pub async fn invalidate_async(&self) -> QueryReader<Q> {
         let storage = consume_context::<QueriesStorage<Q>>();
 
-        let query = self.query.read().clone(); // ✅ FIX: Use read()
+        let query = self.query.read().clone();
         let query_data = storage
             .storage
             .peek_unchecked()
@@ -1190,8 +1192,11 @@ impl<Q: QueryCapability> UseQuery<Q> {
             .cloned()
             .unwrap();
 
-        // Run the query
-        QueriesStorage::run_queries(&[(&query, &query_data)]).await;
+        let loading_strategy = query.loading_strategy;
+
+        // Run the query with the configured loading strategy
+        QueriesStorage::run_queries_with_strategy(&[(&query, &query_data)], loading_strategy)
+            .await;
 
         QueryReader {
             state: query_data.state.clone(),
@@ -1200,11 +1205,13 @@ impl<Q: QueryCapability> UseQuery<Q> {
 
     /// Invalidate this query in the background.
     ///
+    /// Uses the loading strategy configured on the query via `.loading_strategy()`.
+    ///
     /// For an `async` version use [UseQuery::invalidate_async].
     pub fn invalidate(&self) {
         let storage = consume_context::<QueriesStorage<Q>>();
 
-        let query = self.query.read().clone(); // ✅ FIX: Use read()
+        let query = self.query.read().clone();
         let query_data = storage
             .storage
             .peek_unchecked()
@@ -1212,8 +1219,13 @@ impl<Q: QueryCapability> UseQuery<Q> {
             .cloned()
             .unwrap();
 
-        // Run the query
-        spawn(async move { QueriesStorage::run_queries(&[(&query, &query_data)]).await });
+        let loading_strategy = query.loading_strategy;
+
+        // Run the query with the configured loading strategy
+        spawn(async move {
+            QueriesStorage::run_queries_with_strategy(&[(&query, &query_data)], loading_strategy)
+                .await
+        });
     }
 }
 
