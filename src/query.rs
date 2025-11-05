@@ -34,8 +34,8 @@ pub trait QueryCapability
 where
     Self: 'static + Clone + PartialEq + Hash + Eq,
 {
-    type Ok;
-    type Err;
+    type Ok: PartialEq;
+    type Err: PartialEq;
     type Keys: Hash + PartialEq + Clone;
 
     /// Query logic.
@@ -193,11 +193,14 @@ pub enum LoadingStrategy {
     /// Example: `Settled("hello") -> Settled("world")`
     Skip,
 
-    /// Reserved for future use. Currently behaves the same as `Skip`.
-    /// In the future, this will skip state updates if the result is unchanged (requires PartialEq).
+    /// Skip both Loading transition AND state update if the result hasn't changed.
+    /// Compares old and new results using PartialEq. If they're equal, no state update occurs
+    /// and no re-renders are triggered at all (0 re-renders for identical results).
     ///
-    /// Example with same result (future): `Settled("hello") -> (no change)`
-    /// Example with different result (future): `Settled("hello") -> Settled("world")`
+    /// **Note**: Requires `Q::Ok: PartialEq` and `Q::Err: PartialEq` (now enforced by trait bounds).
+    ///
+    /// Example with same result: `Settled("hello") -> (no change, 0 re-renders)`
+    /// Example with different result: `Settled("hello") -> Settled("world") (1 re-render)`
     Memoized,
 }
 
@@ -831,28 +834,41 @@ impl<Q: QueryCapability> QueriesStorage<Q> {
                 }
             }
 
+            let loading_strategy = loading_strategy;
             tasks.push(Box::pin(async move {
                 // Run
                 let new_res = query.query.run(&query.keys).await;
 
-                // For Memoized strategy, we'd need PartialEq to compare results.
-                // Since we can't guarantee that at compile time, Memoized behaves like Skip for now.
-                // Users can use query.loading_strategy on individual queries if they need memoization
-                // on types that implement PartialEq.
-
-                // Set to settled
-                *query_data.state.borrow_mut() = QueryStateData::Settled {
-                    res: new_res,
-                    settlement_instant: Instant::now(),
+                // Determine if we should update state based on strategy
+                let should_update = match loading_strategy {
+                    LoadingStrategy::AlwaysShow | LoadingStrategy::Skip => true,
+                    LoadingStrategy::Memoized => {
+                        // Only update if result changed (now we have PartialEq!)
+                        match &*query_data.state.borrow() {
+                            QueryStateData::Settled { res: old_res, .. }
+                            | QueryStateData::Loading {
+                                res: Some(old_res),
+                            } => &new_res != old_res,
+                            _ => true, // Always update if no previous result
+                        }
+                    }
                 };
-                for reactive_context in query_data.reactive_contexts.lock().unwrap().iter() {
-                    reactive_context.mark_dirty();
+
+                if should_update {
+                    // Set to settled
+                    *query_data.state.borrow_mut() = QueryStateData::Settled {
+                        res: new_res,
+                        settlement_instant: Instant::now(),
+                    };
+                    for reactive_context in query_data.reactive_contexts.lock().unwrap().iter() {
+                        reactive_context.mark_dirty();
+                    }
+
+                    // Notify the suspense task if any
+                    if let Some(suspense_task) = &*query_data.suspense_task.borrow() {
+                        suspense_task.notifier.notify_waiters();
+                    };
                 }
-
-                // Notify the suspense task if any
-                if let Some(suspense_task) = &*query_data.suspense_task.borrow() {
-                    suspense_task.notifier.notify_waiters();
-                };
             }));
         }
 

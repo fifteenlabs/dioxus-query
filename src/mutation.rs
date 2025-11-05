@@ -10,6 +10,7 @@ use std::{
     time::Duration,
 };
 
+use crate::query::LoadingStrategy;
 use dioxus_lib::prelude::*;
 use dioxus_lib::signals::{Readable, Writable};
 use dioxus_lib::{
@@ -29,8 +30,8 @@ pub trait MutationCapability
 where
     Self: 'static + Clone + PartialEq + Hash + Eq,
 {
-    type Ok;
-    type Err;
+    type Ok: PartialEq;
+    type Err: PartialEq;
     type Keys: Hash + PartialEq + Clone;
 
     /// Mutation logic.
@@ -199,25 +200,51 @@ impl<Q: MutationCapability> MutationsStorage<Q> {
     }
 
     async fn run(mutation: &Mutation<Q>, data: &MutationData<Q>, keys: Q::Keys) {
-        // Set to Loading
-        let res =
-            mem::replace(&mut *data.state.borrow_mut(), MutationStateData::Pending).into_loading();
-        *data.state.borrow_mut() = res;
-        for reactive_context in data.reactive_contexts.lock().unwrap().iter() {
-            reactive_context.mark_dirty();
+        // Determine if we should transition to Loading state based on strategy
+        let should_show_loading = match mutation.loading_strategy {
+            LoadingStrategy::AlwaysShow => true,
+            LoadingStrategy::Skip | LoadingStrategy::Memoized => false,
+        };
+
+        if should_show_loading {
+            // Set to Loading
+            let res = mem::replace(&mut *data.state.borrow_mut(), MutationStateData::Pending)
+                .into_loading();
+            *data.state.borrow_mut() = res;
+            for reactive_context in data.reactive_contexts.lock().unwrap().iter() {
+                reactive_context.mark_dirty();
+            }
         }
 
         // Run
-        let res = mutation.mutation.run(&keys).await;
+        let new_res = mutation.mutation.run(&keys).await;
 
-        // Set to Settled
-        mutation.mutation.on_settled(&keys, &res).await;
-        *data.state.borrow_mut() = MutationStateData::Settled {
-            res,
-            settlement_instant: Instant::now(),
+        // Set to Settled (call on_settled before updating state)
+        mutation.mutation.on_settled(&keys, &new_res).await;
+
+        // Determine if we should update state based on strategy
+        let should_update = match mutation.loading_strategy {
+            LoadingStrategy::AlwaysShow | LoadingStrategy::Skip => true,
+            LoadingStrategy::Memoized => {
+                // Only update if result changed (now we have PartialEq!)
+                match &*data.state.borrow() {
+                    MutationStateData::Settled { res: old_res, .. }
+                    | MutationStateData::Loading {
+                        res: Some(old_res),
+                    } => &new_res != old_res,
+                    _ => true, // Always update if no previous result
+                }
+            }
         };
-        for reactive_context in data.reactive_contexts.lock().unwrap().iter() {
-            reactive_context.mark_dirty();
+
+        if should_update {
+            *data.state.borrow_mut() = MutationStateData::Settled {
+                res: new_res,
+                settlement_instant: Instant::now(),
+            };
+            for reactive_context in data.reactive_contexts.lock().unwrap().iter() {
+                reactive_context.mark_dirty();
+            }
         }
     }
 }
@@ -227,12 +254,14 @@ pub struct Mutation<Q: MutationCapability> {
     mutation: Q,
 
     clean_time: Duration,
+    loading_strategy: LoadingStrategy,
 }
 
 impl<Q: MutationCapability> Eq for Mutation<Q> {}
 impl<Q: MutationCapability> Hash for Mutation<Q> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.mutation.hash(state);
+        self.loading_strategy.hash(state);
     }
 }
 
@@ -241,6 +270,7 @@ impl<Q: MutationCapability> Mutation<Q> {
         Self {
             mutation,
             clean_time: Duration::ZERO,
+            loading_strategy: LoadingStrategy::default(),
         }
     }
 
@@ -249,6 +279,17 @@ impl<Q: MutationCapability> Mutation<Q> {
     /// Defaults to [Duration::ZERO], meaning it clears automatically.
     pub fn clean_time(self, clean_time: Duration) -> Self {
         Self { clean_time, ..self }
+    }
+
+    /// Set the loading strategy for this mutation.
+    ///
+    /// Controls whether the mutation transitions to Loading state during execution.
+    /// Defaults to [LoadingStrategy::AlwaysShow].
+    pub fn loading_strategy(self, loading_strategy: LoadingStrategy) -> Self {
+        Self {
+            loading_strategy,
+            ..self
+        }
     }
 }
 
