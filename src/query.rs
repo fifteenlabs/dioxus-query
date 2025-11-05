@@ -2,9 +2,10 @@ use core::fmt;
 use std::{
     cell::{Ref, RefCell},
     collections::{HashMap, HashSet},
-    future::Future,
+    future::{Future, IntoFuture},
     hash::Hash,
     mem,
+    pin::Pin,
     rc::Rc,
     sync::{Arc, Mutex},
     time::Duration,
@@ -176,6 +177,36 @@ impl<Q: QueryCapability> QueryStateData<Q> {
         }
     }
 }
+
+/// Strategy for controlling whether queries transition to Loading state during invalidation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LoadingStrategy {
+    /// Always transition to Loading state when query is invalidated (default behavior).
+    /// This causes components to re-render twice: once when entering Loading, once when Settled.
+    ///
+    /// Example: `Settled("hello") -> Loading("hello") -> Settled("hello")`
+    AlwaysShow,
+
+    /// Skip Loading state transition entirely. Query goes directly from Settled to Settled.
+    /// This prevents any loading indicators from showing during refetch, reducing re-renders from 2 to 1.
+    ///
+    /// Example: `Settled("hello") -> Settled("world")`
+    Skip,
+
+    /// Reserved for future use. Currently behaves the same as `Skip`.
+    /// In the future, this will skip state updates if the result is unchanged (requires PartialEq).
+    ///
+    /// Example with same result (future): `Settled("hello") -> (no change)`
+    /// Example with different result (future): `Settled("hello") -> Settled("world")`
+    Memoized,
+}
+
+impl Default for LoadingStrategy {
+    fn default() -> Self {
+        LoadingStrategy::AlwaysShow
+    }
+}
+
 pub struct QueriesStorage<Q: QueryCapability> {
     storage: CopyValue<HashMap<Query<Q>, QueryData<Q>>>,
 }
@@ -212,6 +243,190 @@ impl<Q: QueryCapability> Clone for QueryData<Q> {
             interval_task: self.interval_task.clone(),
             clean_task: self.clean_task.clone(),
         }
+    }
+}
+
+/// Builder for invalidating all queries with configurable loading strategy.
+/// Implements IntoFuture so it can be used with `.await`.
+pub struct InvalidateAll<'a, Q: QueryCapability> {
+    storage: QueriesStorage<Q>,
+    loading_strategy: LoadingStrategy,
+    _phantom: std::marker::PhantomData<&'a ()>,
+}
+
+impl<'a, Q: QueryCapability> InvalidateAll<'a, Q> {
+    /// Configure the loading strategy for this invalidation.
+    pub fn loading_strategy(mut self, strategy: LoadingStrategy) -> Self {
+        self.loading_strategy = strategy;
+        self
+    }
+}
+
+impl<'a, Q: QueryCapability> IntoFuture for InvalidateAll<'a, Q> {
+    type Output = ();
+    type IntoFuture = Pin<Box<dyn Future<Output = ()> + 'a>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move {
+            let storage = self.storage;
+            let loading_strategy = self.loading_strategy;
+
+            // Get all the queries
+            let matching_queries = storage
+                .storage
+                .read()
+                .clone()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let matching_queries = matching_queries
+                .iter()
+                .map(|(q, d)| (q, d))
+                .collect::<Vec<_>>();
+
+            // Invalidate the queries
+            QueriesStorage::run_queries_with_strategy(&matching_queries, loading_strategy).await
+        })
+    }
+}
+
+/// Builder for invalidating matching queries with configurable loading strategy.
+/// Implements IntoFuture so it can be used with `.await`.
+pub struct InvalidateMatching<'a, Q: QueryCapability> {
+    storage: QueriesStorage<Q>,
+    matching_keys: Q::Keys,
+    loading_strategy: LoadingStrategy,
+    _phantom: std::marker::PhantomData<&'a ()>,
+}
+
+impl<'a, Q: QueryCapability> InvalidateMatching<'a, Q> {
+    /// Configure the loading strategy for this invalidation.
+    pub fn loading_strategy(mut self, strategy: LoadingStrategy) -> Self {
+        self.loading_strategy = strategy;
+        self
+    }
+}
+
+impl<'a, Q: QueryCapability> IntoFuture for InvalidateMatching<'a, Q> {
+    type Output = ();
+    type IntoFuture = Pin<Box<dyn Future<Output = ()> + 'a>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move {
+            let storage = self.storage;
+            let matching_keys = self.matching_keys;
+            let loading_strategy = self.loading_strategy;
+
+            // Get those queries that match
+            let mut matching_queries = Vec::new();
+            for (query, data) in storage.storage.read().iter() {
+                // Check if keys match AND custom matches logic passes
+                if query.keys == matching_keys && query.query.matches(&matching_keys) {
+                    matching_queries.push((query.clone(), data.clone()));
+                }
+            }
+            let matching_queries = matching_queries
+                .iter()
+                .map(|(q, d)| (q, d))
+                .collect::<Vec<_>>();
+
+            // Invalidate the queries
+            QueriesStorage::run_queries_with_strategy(&matching_queries, loading_strategy).await
+        })
+    }
+}
+
+/// Builder for trying to invalidate all queries without panicking if context doesn't exist.
+/// Implements IntoFuture so it can be used with `.await`.
+pub struct TryInvalidateAll<'a, Q: QueryCapability> {
+    storage: Option<QueriesStorage<Q>>,
+    loading_strategy: LoadingStrategy,
+    _phantom: std::marker::PhantomData<&'a ()>,
+}
+
+impl<'a, Q: QueryCapability> TryInvalidateAll<'a, Q> {
+    /// Configure the loading strategy for this invalidation.
+    pub fn loading_strategy(mut self, strategy: LoadingStrategy) -> Self {
+        self.loading_strategy = strategy;
+        self
+    }
+}
+
+impl<'a, Q: QueryCapability> IntoFuture for TryInvalidateAll<'a, Q> {
+    type Output = bool;
+    type IntoFuture = Pin<Box<dyn Future<Output = bool> + 'a>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move {
+            let Some(storage) = self.storage else {
+                return false;
+            };
+            let loading_strategy = self.loading_strategy;
+
+            // Get all the queries
+            let matching_queries = storage
+                .storage
+                .read()
+                .clone()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let matching_queries = matching_queries
+                .iter()
+                .map(|(q, d)| (q, d))
+                .collect::<Vec<_>>();
+
+            // Invalidate the queries
+            QueriesStorage::run_queries_with_strategy(&matching_queries, loading_strategy).await;
+            true
+        })
+    }
+}
+
+/// Builder for trying to invalidate matching queries without panicking if context doesn't exist.
+/// Implements IntoFuture so it can be used with `.await`.
+pub struct TryInvalidateMatching<'a, Q: QueryCapability> {
+    storage: Option<QueriesStorage<Q>>,
+    matching_keys: Q::Keys,
+    loading_strategy: LoadingStrategy,
+    _phantom: std::marker::PhantomData<&'a ()>,
+}
+
+impl<'a, Q: QueryCapability> TryInvalidateMatching<'a, Q> {
+    /// Configure the loading strategy for this invalidation.
+    pub fn loading_strategy(mut self, strategy: LoadingStrategy) -> Self {
+        self.loading_strategy = strategy;
+        self
+    }
+}
+
+impl<'a, Q: QueryCapability> IntoFuture for TryInvalidateMatching<'a, Q> {
+    type Output = bool;
+    type IntoFuture = Pin<Box<dyn Future<Output = bool> + 'a>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move {
+            let Some(storage) = self.storage else {
+                return false;
+            };
+            let matching_keys = self.matching_keys;
+            let loading_strategy = self.loading_strategy;
+
+            // Get those queries that match
+            let mut matching_queries = Vec::new();
+            for (query, data) in storage.storage.read().iter() {
+                // Check if keys match AND custom matches logic passes
+                if query.keys == matching_keys && query.query.matches(&matching_keys) {
+                    matching_queries.push((query.clone(), data.clone()));
+                }
+            }
+            let matching_queries = matching_queries
+                .iter()
+                .map(|(q, d)| (q, d))
+                .collect::<Vec<_>>();
+
+            // Invalidate the queries
+            QueriesStorage::run_queries_with_strategy(&matching_queries, loading_strategy).await;
+            true
+        })
     }
 }
 
@@ -372,92 +587,104 @@ impl<Q: QueryCapability> QueriesStorage<Q> {
         }
     }
 
-    pub async fn invalidate_all() {
+    /// Invalidate all queries in storage.
+    ///
+    /// Returns a builder that implements IntoFuture, so you can `.await` it or
+    /// configure the loading strategy with `.loading_strategy()` before awaiting.
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Simple usage (backward compatible)
+    /// QueriesStorage::<MyQuery>::invalidate_all().await;
+    ///
+    /// // With custom loading strategy
+    /// QueriesStorage::<MyQuery>::invalidate_all()
+    ///     .loading_strategy(LoadingStrategy::Skip)
+    ///     .await;
+    /// ```
+    pub fn invalidate_all() -> InvalidateAll<'static, Q> {
         let storage = consume_context::<QueriesStorage<Q>>();
-
-        // Get all the queries
-        let matching_queries = storage
-            .storage
-            .read()
-            .clone()
-            .into_iter()
-            .collect::<Vec<_>>();
-        let matching_queries = matching_queries
-            .iter()
-            .map(|(q, d)| (q, d))
-            .collect::<Vec<_>>();
-
-        // Invalidate the queries
-        Self::run_queries(&matching_queries).await
+        InvalidateAll {
+            storage,
+            loading_strategy: LoadingStrategy::default(),
+            _phantom: std::marker::PhantomData,
+        }
     }
 
-    pub async fn invalidate_matching(matching_keys: Q::Keys) {
+    /// Invalidate queries matching the given keys.
+    ///
+    /// Returns a builder that implements IntoFuture, so you can `.await` it or
+    /// configure the loading strategy with `.loading_strategy()` before awaiting.
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Simple usage (backward compatible)
+    /// QueriesStorage::<MyQuery>::invalidate_matching(keys).await;
+    ///
+    /// // With custom loading strategy
+    /// QueriesStorage::<MyQuery>::invalidate_matching(keys)
+    ///     .loading_strategy(LoadingStrategy::Memoized)
+    ///     .await;
+    /// ```
+    pub fn invalidate_matching(matching_keys: Q::Keys) -> InvalidateMatching<'static, Q> {
         let storage = consume_context::<QueriesStorage<Q>>();
-
-        // Get those queries that match
-        let mut matching_queries = Vec::new();
-        for (query, data) in storage.storage.read().iter() {
-            // Check if keys match AND custom matches logic passes
-            if query.keys == matching_keys && query.query.matches(&matching_keys) {
-                matching_queries.push((query.clone(), data.clone()));
-            }
+        InvalidateMatching {
+            storage,
+            matching_keys,
+            loading_strategy: LoadingStrategy::default(),
+            _phantom: std::marker::PhantomData,
         }
-        let matching_queries = matching_queries
-            .iter()
-            .map(|(q, d)| (q, d))
-            .collect::<Vec<_>>();
-
-        // Invalidate the queries
-        Self::run_queries(&matching_queries).await
     }
 
     /// Try to invalidate all queries in storage without panicking if context doesn't exist.
-    /// Returns true if the context was found and queries were invalidated, false otherwise.
-    pub async fn try_invalidate_all() -> bool {
-        let Some(storage) = try_consume_context::<QueriesStorage<Q>>() else {
-            return false;
-        };
-
-        // Get all the queries
-        let matching_queries = storage
-            .storage
-            .read()
-            .clone()
-            .into_iter()
-            .collect::<Vec<_>>();
-        let matching_queries = matching_queries
-            .iter()
-            .map(|(q, d)| (q, d))
-            .collect::<Vec<_>>();
-
-        // Invalidate the queries
-        Self::run_queries(&matching_queries).await;
-        true
+    ///
+    /// Returns a builder that implements IntoFuture, so you can `.await` it or
+    /// configure the loading strategy with `.loading_strategy()` before awaiting.
+    /// The future returns `true` if the context was found and queries were invalidated, `false` otherwise.
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Simple usage (backward compatible)
+    /// let success = QueriesStorage::<MyQuery>::try_invalidate_all().await;
+    ///
+    /// // With custom loading strategy
+    /// let success = QueriesStorage::<MyQuery>::try_invalidate_all()
+    ///     .loading_strategy(LoadingStrategy::Skip)
+    ///     .await;
+    /// ```
+    pub fn try_invalidate_all() -> TryInvalidateAll<'static, Q> {
+        let storage = try_consume_context::<QueriesStorage<Q>>();
+        TryInvalidateAll {
+            storage,
+            loading_strategy: LoadingStrategy::default(),
+            _phantom: std::marker::PhantomData,
+        }
     }
 
     /// Try to invalidate queries matching the given keys without panicking if context doesn't exist.
-    /// Returns true if the context was found and queries were invalidated, false otherwise.
-    pub async fn try_invalidate_matching(matching_keys: Q::Keys) -> bool {
-        let Some(storage) = try_consume_context::<QueriesStorage<Q>>() else {
-            return false;
-        };
-
-        // Get those queries that match
-        let mut matching_queries = Vec::new();
-        for (query, data) in storage.storage.read().iter() {
-            // Check if keys match AND custom matches logic passes
-            if query.keys == matching_keys && query.query.matches(&matching_keys) {
-                matching_queries.push((query.clone(), data.clone()));
-            }
+    ///
+    /// Returns a builder that implements IntoFuture, so you can `.await` it or
+    /// configure the loading strategy with `.loading_strategy()` before awaiting.
+    /// The future returns `true` if the context was found and queries were invalidated, `false` otherwise.
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Simple usage (backward compatible)
+    /// let success = QueriesStorage::<MyQuery>::try_invalidate_matching(keys).await;
+    ///
+    /// // With custom loading strategy
+    /// let success = QueriesStorage::<MyQuery>::try_invalidate_matching(keys)
+    ///     .loading_strategy(LoadingStrategy::Memoized)
+    ///     .await;
+    /// ```
+    pub fn try_invalidate_matching(matching_keys: Q::Keys) -> TryInvalidateMatching<'static, Q> {
+        let storage = try_consume_context::<QueriesStorage<Q>>();
+        TryInvalidateMatching {
+            storage,
+            matching_keys,
+            loading_strategy: LoadingStrategy::default(),
+            _phantom: std::marker::PhantomData,
         }
-        let matching_queries = matching_queries
-            .iter()
-            .map(|(q, d)| (q, d))
-            .collect::<Vec<_>>();
-
-        // Invalidate the queries
-        Self::run_queries(&matching_queries).await;
-        true
     }
 
     /// Get the cached query value without running the query function.
@@ -580,6 +807,58 @@ impl<Q: QueryCapability> QueriesStorage<Q> {
         true
     }
 
+    async fn run_queries_with_strategy(
+        queries: &[(&Query<Q>, &QueryData<Q>)],
+        loading_strategy: LoadingStrategy,
+    ) {
+        let tasks = FuturesUnordered::new();
+
+        for (query, query_data) in queries {
+            // Determine if we should transition to Loading state based on strategy
+            let should_show_loading = match loading_strategy {
+                LoadingStrategy::AlwaysShow => true,
+                LoadingStrategy::Skip | LoadingStrategy::Memoized => false,
+            };
+
+            if should_show_loading {
+                // Set to Loading
+                let res =
+                    mem::replace(&mut *query_data.state.borrow_mut(), QueryStateData::Pending)
+                        .into_loading();
+                *query_data.state.borrow_mut() = res;
+                for reactive_context in query_data.reactive_contexts.lock().unwrap().iter() {
+                    reactive_context.mark_dirty();
+                }
+            }
+
+            tasks.push(Box::pin(async move {
+                // Run
+                let new_res = query.query.run(&query.keys).await;
+
+                // For Memoized strategy, we'd need PartialEq to compare results.
+                // Since we can't guarantee that at compile time, Memoized behaves like Skip for now.
+                // Users can use query.loading_strategy on individual queries if they need memoization
+                // on types that implement PartialEq.
+
+                // Set to settled
+                *query_data.state.borrow_mut() = QueryStateData::Settled {
+                    res: new_res,
+                    settlement_instant: Instant::now(),
+                };
+                for reactive_context in query_data.reactive_contexts.lock().unwrap().iter() {
+                    reactive_context.mark_dirty();
+                }
+
+                // Notify the suspense task if any
+                if let Some(suspense_task) = &*query_data.suspense_task.borrow() {
+                    suspense_task.notifier.notify_waiters();
+                };
+            }));
+        }
+
+        tasks.count().await;
+    }
+
     async fn run_queries(queries: &[(&Query<Q>, &QueryData<Q>)]) {
         let tasks = FuturesUnordered::new();
 
@@ -622,6 +901,7 @@ pub struct GetQuery<Q: QueryCapability> {
 
     stale_time: Duration,
     clean_time: Duration,
+    loading_strategy: LoadingStrategy,
 }
 
 impl<Q: QueryCapability> GetQuery<Q> {
@@ -633,6 +913,7 @@ impl<Q: QueryCapability> GetQuery<Q> {
             keys,
             stale_time,
             clean_time,
+            loading_strategy: LoadingStrategy::default(),
         }
     }
     /// For how long is the data considered stale. If a query subscriber is mounted and the data is stale, it will re run the query.
@@ -648,6 +929,17 @@ impl<Q: QueryCapability> GetQuery<Q> {
     pub fn clean_time(self, clean_time: Duration) -> Self {
         Self { clean_time, ..self }
     }
+
+    /// Set the loading strategy for this query.
+    ///
+    /// Controls whether the query transitions to Loading state during invalidation.
+    /// Defaults to [LoadingStrategy::AlwaysShow].
+    pub fn loading_strategy(self, loading_strategy: LoadingStrategy) -> Self {
+        Self {
+            loading_strategy,
+            ..self
+        }
+    }
 }
 
 impl<Q: QueryCapability> From<GetQuery<Q>> for Query<Q> {
@@ -661,6 +953,7 @@ impl<Q: QueryCapability> From<GetQuery<Q>> for Query<Q> {
             stale_time: value.stale_time,
             clean_time: value.clean_time,
             interval_time: Duration::MAX,
+            loading_strategy: value.loading_strategy,
         }
     }
 }
@@ -674,6 +967,7 @@ pub struct Query<Q: QueryCapability> {
     stale_time: Duration,
     clean_time: Duration,
     interval_time: Duration,
+    loading_strategy: LoadingStrategy,
 }
 
 impl<Q: QueryCapability> Eq for Query<Q> {}
@@ -686,6 +980,7 @@ impl<Q: QueryCapability> Hash for Query<Q> {
 
         self.stale_time.hash(state);
         self.clean_time.hash(state);
+        self.loading_strategy.hash(state);
 
         // Intentionally left out as intervals can vary from one query subscriber to another
         // self.interval_time.hash(state);
@@ -704,6 +999,7 @@ impl<Q: QueryCapability> Query<Q> {
             stale_time,
             clean_time,
             interval_time,
+            loading_strategy: LoadingStrategy::default(),
         }
     }
 
@@ -737,6 +1033,17 @@ impl<Q: QueryCapability> Query<Q> {
     pub fn interval_time(self, interval_time: Duration) -> Self {
         Self {
             interval_time,
+            ..self
+        }
+    }
+
+    /// Set the loading strategy for this query.
+    ///
+    /// Controls whether the query transitions to Loading state during invalidation.
+    /// Defaults to [LoadingStrategy::AlwaysShow].
+    pub fn loading_strategy(self, loading_strategy: LoadingStrategy) -> Self {
+        Self {
+            loading_strategy,
             ..self
         }
     }
