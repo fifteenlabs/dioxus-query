@@ -181,14 +181,16 @@ impl<Q: QueryCapability> QueryStateData<Q> {
 /// Strategy for controlling whether queries transition to Loading state during invalidation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LoadingStrategy {
-    /// Always transition to Loading state when query is invalidated (default behavior).
+    /// Always transition to Loading state when query is invalidated.
     /// This causes components to re-render twice: once when entering Loading, once when Settled.
+    /// Use this when you want to show loading indicators during refetch.
     ///
     /// Example: `Settled("hello") -> Loading("hello") -> Settled("hello")`
     AlwaysShow,
 
-    /// Skip Loading state transition entirely. Query goes directly from Settled to Settled.
+    /// Skip Loading state transition entirely. Query goes directly from Settled to Settled (default).
     /// This prevents any loading indicators from showing during refetch, reducing re-renders from 2 to 1.
+    /// Best for background refetches where you don't want UI flashing.
     ///
     /// Example: `Settled("hello") -> Settled("world")`
     Skip,
@@ -196,8 +198,9 @@ pub enum LoadingStrategy {
     /// Skip both Loading transition AND state update if the result hasn't changed.
     /// Compares old and new results using PartialEq. If they're equal, no state update occurs
     /// and no re-renders are triggered at all (0 re-renders for identical results).
+    /// Best for polling/interval queries where data rarely changes.
     ///
-    /// **Note**: Requires `Q::Ok: PartialEq` and `Q::Err: PartialEq` (now enforced by trait bounds).
+    /// **Note**: Requires `Q::Ok: PartialEq` and `Q::Err: PartialEq` (enforced by trait bounds).
     ///
     /// Example with same result: `Settled("hello") -> (no change, 0 re-renders)`
     /// Example with different result: `Settled("hello") -> Settled("world") (1 re-render)`
@@ -206,7 +209,7 @@ pub enum LoadingStrategy {
 
 impl Default for LoadingStrategy {
     fn default() -> Self {
-        LoadingStrategy::AlwaysShow
+        LoadingStrategy::Skip
     }
 }
 
@@ -949,7 +952,7 @@ impl<Q: QueryCapability> GetQuery<Q> {
     /// Set the loading strategy for this query.
     ///
     /// Controls whether the query transitions to Loading state during invalidation.
-    /// Defaults to [LoadingStrategy::AlwaysShow].
+    /// Defaults to [LoadingStrategy::Skip].
     pub fn loading_strategy(self, loading_strategy: LoadingStrategy) -> Self {
         Self {
             loading_strategy,
@@ -1056,7 +1059,7 @@ impl<Q: QueryCapability> Query<Q> {
     /// Set the loading strategy for this query.
     ///
     /// Controls whether the query transitions to Loading state during invalidation.
-    /// Defaults to [LoadingStrategy::AlwaysShow].
+    /// Defaults to [LoadingStrategy::Skip].
     pub fn loading_strategy(self, loading_strategy: LoadingStrategy) -> Self {
         Self {
             loading_strategy,

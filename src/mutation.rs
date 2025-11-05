@@ -284,7 +284,7 @@ impl<Q: MutationCapability> Mutation<Q> {
     /// Set the loading strategy for this mutation.
     ///
     /// Controls whether the mutation transitions to Loading state during execution.
-    /// Defaults to [LoadingStrategy::AlwaysShow].
+    /// Defaults to [LoadingStrategy::Skip].
     pub fn loading_strategy(self, loading_strategy: LoadingStrategy) -> Self {
         Self {
             loading_strategy,
