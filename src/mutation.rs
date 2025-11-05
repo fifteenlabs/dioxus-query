@@ -202,8 +202,8 @@ impl<Q: MutationCapability> MutationsStorage<Q> {
     async fn run(mutation: &Mutation<Q>, data: &MutationData<Q>, keys: Q::Keys) {
         // Determine if we should transition to Loading state based on strategy
         let should_show_loading = match mutation.loading_strategy {
-            LoadingStrategy::AlwaysShow => true,
-            LoadingStrategy::Skip | LoadingStrategy::Memoized => false,
+            LoadingStrategy::Full => true,
+            LoadingStrategy::Memoized => false,
         };
 
         if should_show_loading {
@@ -222,26 +222,27 @@ impl<Q: MutationCapability> MutationsStorage<Q> {
         // Set to Settled (call on_settled before updating state)
         mutation.mutation.on_settled(&keys, &new_res).await;
 
-        // Determine if we should update state based on strategy
-        let should_update = match mutation.loading_strategy {
-            LoadingStrategy::AlwaysShow | LoadingStrategy::Skip => true,
+        // Determine if we should trigger re-renders based on strategy
+        let should_mark_dirty = match mutation.loading_strategy {
+            LoadingStrategy::Full => true,
             LoadingStrategy::Memoized => {
-                // Only update if result changed (now we have PartialEq!)
+                // Only trigger re-renders if result changed (now we have PartialEq!)
                 match &*data.state.borrow() {
                     MutationStateData::Settled { res: old_res, .. }
-                    | MutationStateData::Loading {
-                        res: Some(old_res),
-                    } => &new_res != old_res,
+                    | MutationStateData::Loading { res: Some(old_res) } => &new_res != old_res,
                     _ => true, // Always update if no previous result
                 }
             }
         };
 
-        if should_update {
-            *data.state.borrow_mut() = MutationStateData::Settled {
-                res: new_res,
-                settlement_instant: Instant::now(),
-            };
+        // Always update state and timestamp
+        *data.state.borrow_mut() = MutationStateData::Settled {
+            res: new_res,
+            settlement_instant: Instant::now(),
+        };
+
+        // Only trigger re-renders if the result actually changed (for Memoized) or always (for Full)
+        if should_mark_dirty {
             for reactive_context in data.reactive_contexts.lock().unwrap().iter() {
                 reactive_context.mark_dirty();
             }
@@ -284,7 +285,7 @@ impl<Q: MutationCapability> Mutation<Q> {
     /// Set the loading strategy for this mutation.
     ///
     /// Controls whether the mutation transitions to Loading state during execution.
-    /// Defaults to [LoadingStrategy::Skip].
+    /// Defaults to [LoadingStrategy::Memoized].
     pub fn loading_strategy(self, loading_strategy: LoadingStrategy) -> Self {
         Self {
             loading_strategy,
