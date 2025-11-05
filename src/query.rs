@@ -242,13 +242,12 @@ impl<Q: QueryCapability> Clone for QueryData<Q> {
 
 /// Builder for invalidating all queries with configurable loading strategy.
 /// Implements IntoFuture so it can be used with `.await`.
-pub struct InvalidateAll<'a, Q: QueryCapability> {
+pub struct InvalidateAll<Q: QueryCapability> {
     storage: QueriesStorage<Q>,
     loading_strategy_override: Option<LoadingStrategy>,
-    _phantom: std::marker::PhantomData<&'a ()>,
 }
 
-impl<'a, Q: QueryCapability> InvalidateAll<'a, Q> {
+impl<Q: QueryCapability> InvalidateAll<Q> {
     /// Override the loading strategy for all invalidated queries.
     /// By default, each query uses its own configured loading_strategy.
     pub fn loading_strategy(mut self, strategy: LoadingStrategy) -> Self {
@@ -257,9 +256,9 @@ impl<'a, Q: QueryCapability> InvalidateAll<'a, Q> {
     }
 }
 
-impl<'a, Q: QueryCapability> IntoFuture for InvalidateAll<'a, Q> {
+impl<Q: QueryCapability> IntoFuture for InvalidateAll<Q> {
     type Output = ();
-    type IntoFuture = Pin<Box<dyn Future<Output = ()> + 'a>>;
+    type IntoFuture = Pin<Box<dyn Future<Output = ()>>>;
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
@@ -290,14 +289,13 @@ impl<'a, Q: QueryCapability> IntoFuture for InvalidateAll<'a, Q> {
 
 /// Builder for invalidating matching queries with configurable loading strategy.
 /// Implements IntoFuture so it can be used with `.await`.
-pub struct InvalidateMatching<'a, Q: QueryCapability> {
+pub struct InvalidateMatching<Q: QueryCapability> {
     storage: QueriesStorage<Q>,
     matching_keys: Q::Keys,
     loading_strategy_override: Option<LoadingStrategy>,
-    _phantom: std::marker::PhantomData<&'a ()>,
 }
 
-impl<'a, Q: QueryCapability> InvalidateMatching<'a, Q> {
+impl<Q: QueryCapability> InvalidateMatching<Q> {
     /// Override the loading strategy for all invalidated queries.
     /// By default, each query uses its own configured loading_strategy.
     pub fn loading_strategy(mut self, strategy: LoadingStrategy) -> Self {
@@ -306,9 +304,9 @@ impl<'a, Q: QueryCapability> InvalidateMatching<'a, Q> {
     }
 }
 
-impl<'a, Q: QueryCapability> IntoFuture for InvalidateMatching<'a, Q> {
+impl<Q: QueryCapability> IntoFuture for InvalidateMatching<Q> {
     type Output = ();
-    type IntoFuture = Pin<Box<dyn Future<Output = ()> + 'a>>;
+    type IntoFuture = Pin<Box<dyn Future<Output = ()>>>;
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
@@ -341,13 +339,12 @@ impl<'a, Q: QueryCapability> IntoFuture for InvalidateMatching<'a, Q> {
 
 /// Builder for trying to invalidate all queries without panicking if context doesn't exist.
 /// Implements IntoFuture so it can be used with `.await`.
-pub struct TryInvalidateAll<'a, Q: QueryCapability> {
+pub struct TryInvalidateAll<Q: QueryCapability> {
     storage: Option<QueriesStorage<Q>>,
     loading_strategy_override: Option<LoadingStrategy>,
-    _phantom: std::marker::PhantomData<&'a ()>,
 }
 
-impl<'a, Q: QueryCapability> TryInvalidateAll<'a, Q> {
+impl<Q: QueryCapability> TryInvalidateAll<Q> {
     /// Override the loading strategy for all invalidated queries.
     /// By default, each query uses its own configured loading_strategy.
     pub fn loading_strategy(mut self, strategy: LoadingStrategy) -> Self {
@@ -356,9 +353,9 @@ impl<'a, Q: QueryCapability> TryInvalidateAll<'a, Q> {
     }
 }
 
-impl<'a, Q: QueryCapability> IntoFuture for TryInvalidateAll<'a, Q> {
+impl<Q: QueryCapability> IntoFuture for TryInvalidateAll<Q> {
     type Output = bool;
-    type IntoFuture = Pin<Box<dyn Future<Output = bool> + 'a>>;
+    type IntoFuture = Pin<Box<dyn Future<Output = bool>>>;
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
@@ -392,14 +389,13 @@ impl<'a, Q: QueryCapability> IntoFuture for TryInvalidateAll<'a, Q> {
 
 /// Builder for trying to invalidate matching queries without panicking if context doesn't exist.
 /// Implements IntoFuture so it can be used with `.await`.
-pub struct TryInvalidateMatching<'a, Q: QueryCapability> {
+pub struct TryInvalidateMatching<Q: QueryCapability> {
     storage: Option<QueriesStorage<Q>>,
     matching_keys: Q::Keys,
     loading_strategy_override: Option<LoadingStrategy>,
-    _phantom: std::marker::PhantomData<&'a ()>,
 }
 
-impl<'a, Q: QueryCapability> TryInvalidateMatching<'a, Q> {
+impl<Q: QueryCapability> TryInvalidateMatching<Q> {
     /// Override the loading strategy for all invalidated queries.
     /// By default, each query uses its own configured loading_strategy.
     pub fn loading_strategy(mut self, strategy: LoadingStrategy) -> Self {
@@ -408,9 +404,9 @@ impl<'a, Q: QueryCapability> TryInvalidateMatching<'a, Q> {
     }
 }
 
-impl<'a, Q: QueryCapability> IntoFuture for TryInvalidateMatching<'a, Q> {
+impl<Q: QueryCapability> IntoFuture for TryInvalidateMatching<Q> {
     type Output = bool;
-    type IntoFuture = Pin<Box<dyn Future<Output = bool> + 'a>>;
+    type IntoFuture = Pin<Box<dyn Future<Output = bool>>>;
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
@@ -602,12 +598,11 @@ impl<Q: QueryCapability> QueriesStorage<Q> {
     ///     .loading_strategy(LoadingStrategy::Full)
     ///     .await;
     /// ```
-    pub fn invalidate_all() -> InvalidateAll<'static, Q> {
+    pub fn invalidate_all() -> InvalidateAll<Q> {
         let storage = consume_context::<QueriesStorage<Q>>();
         InvalidateAll {
             storage,
             loading_strategy_override: None,
-            _phantom: std::marker::PhantomData,
         }
     }
 
@@ -626,13 +621,12 @@ impl<Q: QueryCapability> QueriesStorage<Q> {
     ///     .loading_strategy(LoadingStrategy::Memoized)
     ///     .await;
     /// ```
-    pub fn invalidate_matching(matching_keys: Q::Keys) -> InvalidateMatching<'static, Q> {
+    pub fn invalidate_matching(matching_keys: Q::Keys) -> InvalidateMatching<Q> {
         let storage = consume_context::<QueriesStorage<Q>>();
         InvalidateMatching {
             storage,
             matching_keys,
             loading_strategy_override: None,
-            _phantom: std::marker::PhantomData,
         }
     }
 
@@ -652,12 +646,11 @@ impl<Q: QueryCapability> QueriesStorage<Q> {
     ///     .loading_strategy(LoadingStrategy::Full)
     ///     .await;
     /// ```
-    pub fn try_invalidate_all() -> TryInvalidateAll<'static, Q> {
+    pub fn try_invalidate_all() -> TryInvalidateAll<Q> {
         let storage = try_consume_context::<QueriesStorage<Q>>();
         TryInvalidateAll {
             storage,
             loading_strategy_override: None,
-            _phantom: std::marker::PhantomData,
         }
     }
 
@@ -677,13 +670,12 @@ impl<Q: QueryCapability> QueriesStorage<Q> {
     ///     .loading_strategy(LoadingStrategy::Memoized)
     ///     .await;
     /// ```
-    pub fn try_invalidate_matching(matching_keys: Q::Keys) -> TryInvalidateMatching<'static, Q> {
+    pub fn try_invalidate_matching(matching_keys: Q::Keys) -> TryInvalidateMatching<Q> {
         let storage = try_consume_context::<QueriesStorage<Q>>();
         TryInvalidateMatching {
             storage,
             matching_keys,
             loading_strategy_override: None,
-            _phantom: std::marker::PhantomData,
         }
     }
 
@@ -814,14 +806,8 @@ impl<Q: QueryCapability> QueriesStorage<Q> {
         for (query, query_data) in queries {
             let loading_strategy = query.loading_strategy;
 
-            // Determine if we should transition to Loading state based on strategy
-            let should_show_loading = match loading_strategy {
-                LoadingStrategy::Full => true,
-                LoadingStrategy::Memoized => false,
-            };
-
-            if should_show_loading {
-                // Set to Loading
+            // Transition to Loading state if using Full strategy
+            if let LoadingStrategy::Full = loading_strategy {
                 let res =
                     mem::replace(&mut *query_data.state.borrow_mut(), QueryStateData::Pending)
                         .into_loading();
@@ -880,14 +866,8 @@ impl<Q: QueryCapability> QueriesStorage<Q> {
         let tasks = FuturesUnordered::new();
 
         for (query, query_data) in queries {
-            // Determine if we should transition to Loading state based on strategy
-            let should_show_loading = match loading_strategy {
-                LoadingStrategy::Full => true,
-                LoadingStrategy::Memoized => false,
-            };
-
-            if should_show_loading {
-                // Set to Loading
+            // Transition to Loading state if using Full strategy
+            if let LoadingStrategy::Full = loading_strategy {
                 let res =
                     mem::replace(&mut *query_data.state.borrow_mut(), QueryStateData::Pending)
                         .into_loading();

@@ -200,14 +200,8 @@ impl<Q: MutationCapability> MutationsStorage<Q> {
     }
 
     async fn run(mutation: &Mutation<Q>, data: &MutationData<Q>, keys: Q::Keys) {
-        // Determine if we should transition to Loading state based on strategy
-        let should_show_loading = match mutation.loading_strategy {
-            LoadingStrategy::Full => true,
-            LoadingStrategy::Memoized => false,
-        };
-
-        if should_show_loading {
-            // Set to Loading
+        // Transition to Loading state if using Full strategy
+        if let LoadingStrategy::Full = mutation.loading_strategy {
             let res = mem::replace(&mut *data.state.borrow_mut(), MutationStateData::Pending)
                 .into_loading();
             *data.state.borrow_mut() = res;
@@ -262,7 +256,6 @@ impl<Q: MutationCapability> Eq for Mutation<Q> {}
 impl<Q: MutationCapability> Hash for Mutation<Q> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.mutation.hash(state);
-        self.loading_strategy.hash(state);
     }
 }
 
