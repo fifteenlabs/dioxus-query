@@ -179,6 +179,83 @@ impl<Q: QueryCapability> QueryStateData<Q> {
 }
 
 /// Strategy for controlling whether queries transition to Loading state during invalidation.
+///
+/// # Examples
+///
+/// ## Using Memoized (default) - Best for background refetches
+///
+/// ```rust
+/// use dioxus_query::*;
+/// # use dioxus::prelude::*;
+///
+/// #[derive(Clone, PartialEq, Hash)]
+/// struct UserQuery;
+///
+/// impl QueryCapability for UserQuery {
+///     type Ok = String;
+///     type Err = ();
+///     type Keys = u32;
+///
+///     async fn run(&self, user_id: &u32) -> Result<String, ()> {
+///         // Fetch user data...
+///         Ok(format!("User {}", user_id))
+///     }
+/// }
+///
+/// fn UserProfile() -> Element {
+///     // Default strategy is Memoized - no Loading state on refetch
+///     let user = use_query(Query::new(1, UserQuery));
+///
+///     // When invalidated, this will:
+///     // - Skip Loading state
+///     // - Only trigger re-render if data actually changed
+///     // - Perfect for polling/background updates
+///
+///     rsx! {
+///         div { "{user.read().state()}" }
+///     }
+/// }
+/// ```
+///
+/// ## Using Full - Show loading indicators during refetch
+///
+/// ```rust
+/// use dioxus_query::*;
+/// # use dioxus::prelude::*;
+/// # #[derive(Clone, PartialEq, Hash)]
+/// # struct UserQuery;
+/// # impl QueryCapability for UserQuery {
+/// #     type Ok = String;
+/// #     type Err = ();
+/// #     type Keys = u32;
+/// #     async fn run(&self, user_id: &u32) -> Result<String, ()> {
+/// #         Ok(format!("User {}", user_id))
+/// #     }
+/// # }
+///
+/// fn UserProfile() -> Element {
+///     // Explicitly use Full strategy to show loading during refetch
+///     let user = use_query(
+///         Query::new(1, UserQuery)
+///             .loading_strategy(LoadingStrategy::Full)
+///     );
+///
+///     // When invalidated, this will:
+///     // - Transition to Loading state
+///     // - Show loading spinner during refetch
+///     // - Update to Settled when complete
+///
+///     rsx! {
+///         div {
+///             match user.read().state().as_ref() {
+///                 QueryStateData::Loading { .. } => rsx! { "Refreshing..." },
+///                 QueryStateData::Settled { res: Ok(data), .. } => rsx! { "{data}" },
+///                 _ => rsx! { "Loading..." }
+///             }
+///         }
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum LoadingStrategy {
     /// Always transition to Loading state when query is invalidated.
@@ -250,6 +327,31 @@ pub struct InvalidateAll<Q: QueryCapability> {
 impl<Q: QueryCapability> InvalidateAll<Q> {
     /// Override the loading strategy for all invalidated queries.
     /// By default, each query uses its own configured loading_strategy.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use dioxus_query::*;
+    /// # use dioxus::prelude::*;
+    /// # #[derive(Clone, PartialEq, Hash)]
+    /// # struct MyQuery;
+    /// # impl QueryCapability for MyQuery {
+    /// #     type Ok = String;
+    /// #     type Err = ();
+    /// #     type Keys = ();
+    /// #     async fn run(&self, _: &()) -> Result<String, ()> { Ok("data".into()) }
+    /// # }
+    ///
+    /// async fn refresh_all() {
+    ///     // Respects each query's individual loading_strategy (default)
+    ///     QueriesStorage::<MyQuery>::invalidate_all().await;
+    ///
+    ///     // Override all queries to use Full strategy
+    ///     QueriesStorage::<MyQuery>::invalidate_all()
+    ///         .loading_strategy(LoadingStrategy::Full)
+    ///         .await;
+    /// }
+    /// ```
     pub fn loading_strategy(mut self, strategy: LoadingStrategy) -> Self {
         self.loading_strategy_override = Some(strategy);
         self
@@ -1064,6 +1166,76 @@ impl<Q: QueryCapability> Query<Q> {
     ///
     /// Controls whether the query transitions to Loading state during invalidation.
     /// Defaults to [LoadingStrategy::Memoized].
+    ///
+    /// # Examples
+    ///
+    /// ## Memoized strategy for polling queries
+    ///
+    /// ```rust
+    /// use dioxus_query::*;
+    /// use std::time::Duration;
+    /// # use dioxus::prelude::*;
+    /// # #[derive(Clone, PartialEq, Hash)]
+    /// # struct StockPriceQuery;
+    /// # impl QueryCapability for StockPriceQuery {
+    /// #     type Ok = f64;
+    /// #     type Err = ();
+    /// #     type Keys = String;
+    /// #     async fn run(&self, symbol: &String) -> Result<f64, ()> { Ok(100.0) }
+    /// # }
+    ///
+    /// fn StockPrice() -> Element {
+    ///     // Poll every 5 seconds, but only re-render if price changed
+    ///     let price = use_query(
+    ///         Query::new("AAPL".to_string(), StockPriceQuery)
+    ///             .interval_time(Duration::from_secs(5))
+    ///             .loading_strategy(LoadingStrategy::Memoized) // default
+    ///     );
+    ///
+    ///     // Component only re-renders when price actually changes
+    ///     rsx! { div { "Price: ${price.read().state().ok().unwrap_or(&0.0)}" } }
+    /// }
+    /// ```
+    ///
+    /// ## Full strategy for user-triggered refreshes
+    ///
+    /// ```rust
+    /// use dioxus_query::*;
+    /// # use dioxus::prelude::*;
+    /// # #[derive(Clone, PartialEq, Hash)]
+    /// # struct UserDataQuery;
+    /// # impl QueryCapability for UserDataQuery {
+    /// #     type Ok = String;
+    /// #     type Err = ();
+    /// #     type Keys = u32;
+    /// #     async fn run(&self, id: &u32) -> Result<String, ()> { Ok("data".into()) }
+    /// # }
+    ///
+    /// fn UserData() -> Element {
+    ///     // Show loading spinner during manual refresh
+    ///     let user_data = use_query(
+    ///         Query::new(1, UserDataQuery)
+    ///             .loading_strategy(LoadingStrategy::Full)
+    ///     );
+    ///
+    ///     rsx! {
+    ///         button {
+    ///             onclick: move |_| {
+    ///                 // User sees loading state during refresh
+    ///                 user_data.invalidate();
+    ///             },
+    ///             "Refresh"
+    ///         }
+    ///         div {
+    ///             if user_data.read().state().is_loading() {
+    ///                 "Loading..."
+    ///             } else {
+    ///                 "Data loaded"
+    ///             }
+    ///         }
+    ///     }
+    /// }
+    /// ```
     pub fn loading_strategy(self, loading_strategy: LoadingStrategy) -> Self {
         Self {
             loading_strategy,

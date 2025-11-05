@@ -279,6 +279,79 @@ impl<Q: MutationCapability> Mutation<Q> {
     ///
     /// Controls whether the mutation transitions to Loading state during execution.
     /// Defaults to [LoadingStrategy::Memoized].
+    ///
+    /// # Examples
+    ///
+    /// ## Memoized strategy for idempotent mutations
+    ///
+    /// ```rust
+    /// use dioxus_query::*;
+    /// # use dioxus::prelude::*;
+    /// # #[derive(Clone, PartialEq, Hash)]
+    /// # struct UpdatePreferencesMutation;
+    /// # impl MutationCapability for UpdatePreferencesMutation {
+    /// #     type Ok = ();
+    /// #     type Err = String;
+    /// #     type Keys = bool;
+    /// #     async fn run(&self, dark_mode: &bool) -> Result<(), String> { Ok(()) }
+    /// # }
+    ///
+    /// fn Settings() -> Element {
+    ///     // For toggles/preferences, avoid showing loading on every click
+    ///     let update_prefs = use_mutation(
+    ///         Mutation::new(UpdatePreferencesMutation)
+    ///             .loading_strategy(LoadingStrategy::Memoized) // default
+    ///     );
+    ///
+    ///     rsx! {
+    ///         button {
+    ///             onclick: move |_| {
+    ///                 // No loading state shown for quick operations
+    ///                 update_prefs.mutate(true);
+    ///             },
+    ///             "Enable Dark Mode"
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// ## Full strategy for important operations
+    ///
+    /// ```rust
+    /// use dioxus_query::*;
+    /// # use dioxus::prelude::*;
+    /// # #[derive(Clone, PartialEq, Hash)]
+    /// # struct DeleteAccountMutation;
+    /// # impl MutationCapability for DeleteAccountMutation {
+    /// #     type Ok = ();
+    /// #     type Err = String;
+    /// #     type Keys = u32;
+    /// #     async fn run(&self, user_id: &u32) -> Result<(), String> { Ok(()) }
+    /// # }
+    ///
+    /// fn DeleteAccount() -> Element {
+    ///     // Show loading indicator for critical operations
+    ///     let delete_account = use_mutation(
+    ///         Mutation::new(DeleteAccountMutation)
+    ///             .loading_strategy(LoadingStrategy::Full)
+    ///     );
+    ///
+    ///     rsx! {
+    ///         button {
+    ///             onclick: move |_| {
+    ///                 // User sees clear feedback during deletion
+    ///                 delete_account.mutate(123);
+    ///             },
+    ///             disabled: delete_account.read().state().is_loading(),
+    ///             if delete_account.read().state().is_loading() {
+    ///                 "Deleting..."
+    ///             } else {
+    ///                 "Delete Account"
+    ///             }
+    ///         }
+    ///     }
+    /// }
+    /// ```
     pub fn loading_strategy(self, loading_strategy: LoadingStrategy) -> Self {
         Self {
             loading_strategy,
