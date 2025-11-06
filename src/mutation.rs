@@ -10,6 +10,7 @@ use std::{
     time::Duration,
 };
 
+use crate::query::LoadingStrategy;
 use dioxus_lib::prelude::*;
 use dioxus_lib::signals::{Readable, Writable};
 use dioxus_lib::{
@@ -29,8 +30,8 @@ pub trait MutationCapability
 where
     Self: 'static + Clone + PartialEq + Hash + Eq,
 {
-    type Ok;
-    type Err;
+    type Ok: PartialEq;
+    type Err: PartialEq;
     type Keys: Hash + PartialEq + Clone;
 
     /// Mutation logic.
@@ -199,25 +200,46 @@ impl<Q: MutationCapability> MutationsStorage<Q> {
     }
 
     async fn run(mutation: &Mutation<Q>, data: &MutationData<Q>, keys: Q::Keys) {
-        // Set to Loading
-        let res =
-            mem::replace(&mut *data.state.borrow_mut(), MutationStateData::Pending).into_loading();
-        *data.state.borrow_mut() = res;
-        for reactive_context in data.reactive_contexts.lock().unwrap().iter() {
-            reactive_context.mark_dirty();
+        // Transition to Loading state if using Full strategy
+        if let LoadingStrategy::Full = mutation.loading_strategy {
+            let res = mem::replace(&mut *data.state.borrow_mut(), MutationStateData::Pending)
+                .into_loading();
+            *data.state.borrow_mut() = res;
+            for reactive_context in data.reactive_contexts.lock().unwrap().iter() {
+                reactive_context.mark_dirty();
+            }
         }
 
         // Run
-        let res = mutation.mutation.run(&keys).await;
+        let new_res = mutation.mutation.run(&keys).await;
 
-        // Set to Settled
-        mutation.mutation.on_settled(&keys, &res).await;
+        // Set to Settled (call on_settled before updating state)
+        mutation.mutation.on_settled(&keys, &new_res).await;
+
+        // Determine if we should trigger re-renders based on strategy
+        let should_mark_dirty = match mutation.loading_strategy {
+            LoadingStrategy::Full => true,
+            LoadingStrategy::Memoized => {
+                // Only trigger re-renders if result changed (now we have PartialEq!)
+                match &*data.state.borrow() {
+                    MutationStateData::Settled { res: old_res, .. }
+                    | MutationStateData::Loading { res: Some(old_res) } => &new_res != old_res,
+                    _ => true, // Always update if no previous result
+                }
+            }
+        };
+
+        // Always update state and timestamp
         *data.state.borrow_mut() = MutationStateData::Settled {
-            res,
+            res: new_res,
             settlement_instant: Instant::now(),
         };
-        for reactive_context in data.reactive_contexts.lock().unwrap().iter() {
-            reactive_context.mark_dirty();
+
+        // Only trigger re-renders if the result actually changed (for Memoized) or always (for Full)
+        if should_mark_dirty {
+            for reactive_context in data.reactive_contexts.lock().unwrap().iter() {
+                reactive_context.mark_dirty();
+            }
         }
     }
 }
@@ -227,6 +249,7 @@ pub struct Mutation<Q: MutationCapability> {
     mutation: Q,
 
     clean_time: Duration,
+    loading_strategy: LoadingStrategy,
 }
 
 impl<Q: MutationCapability> Eq for Mutation<Q> {}
@@ -241,6 +264,7 @@ impl<Q: MutationCapability> Mutation<Q> {
         Self {
             mutation,
             clean_time: Duration::ZERO,
+            loading_strategy: LoadingStrategy::default(),
         }
     }
 
@@ -249,6 +273,90 @@ impl<Q: MutationCapability> Mutation<Q> {
     /// Defaults to [Duration::ZERO], meaning it clears automatically.
     pub fn clean_time(self, clean_time: Duration) -> Self {
         Self { clean_time, ..self }
+    }
+
+    /// Set the loading strategy for this mutation.
+    ///
+    /// Controls whether the mutation transitions to Loading state during execution.
+    /// Defaults to [LoadingStrategy::Memoized].
+    ///
+    /// # Examples
+    ///
+    /// ## Memoized strategy for idempotent mutations
+    ///
+    /// ```rust
+    /// use dioxus_query::*;
+    /// # use dioxus::prelude::*;
+    /// # #[derive(Clone, PartialEq, Hash)]
+    /// # struct UpdatePreferencesMutation;
+    /// # impl MutationCapability for UpdatePreferencesMutation {
+    /// #     type Ok = ();
+    /// #     type Err = String;
+    /// #     type Keys = bool;
+    /// #     async fn run(&self, dark_mode: &bool) -> Result<(), String> { Ok(()) }
+    /// # }
+    ///
+    /// fn Settings() -> Element {
+    ///     // For toggles/preferences, avoid showing loading on every click
+    ///     let update_prefs = use_mutation(
+    ///         Mutation::new(UpdatePreferencesMutation)
+    ///             .loading_strategy(LoadingStrategy::Memoized) // default
+    ///     );
+    ///
+    ///     rsx! {
+    ///         button {
+    ///             onclick: move |_| {
+    ///                 // No loading state shown for quick operations
+    ///                 update_prefs.mutate(true);
+    ///             },
+    ///             "Enable Dark Mode"
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// ## Full strategy for important operations
+    ///
+    /// ```rust
+    /// use dioxus_query::*;
+    /// # use dioxus::prelude::*;
+    /// # #[derive(Clone, PartialEq, Hash)]
+    /// # struct DeleteAccountMutation;
+    /// # impl MutationCapability for DeleteAccountMutation {
+    /// #     type Ok = ();
+    /// #     type Err = String;
+    /// #     type Keys = u32;
+    /// #     async fn run(&self, user_id: &u32) -> Result<(), String> { Ok(()) }
+    /// # }
+    ///
+    /// fn DeleteAccount() -> Element {
+    ///     // Show loading indicator for critical operations
+    ///     let delete_account = use_mutation(
+    ///         Mutation::new(DeleteAccountMutation)
+    ///             .loading_strategy(LoadingStrategy::Full)
+    ///     );
+    ///
+    ///     rsx! {
+    ///         button {
+    ///             onclick: move |_| {
+    ///                 // User sees clear feedback during deletion
+    ///                 delete_account.mutate(123);
+    ///             },
+    ///             disabled: delete_account.read().state().is_loading(),
+    ///             if delete_account.read().state().is_loading() {
+    ///                 "Deleting..."
+    ///             } else {
+    ///                 "Delete Account"
+    ///             }
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    pub fn loading_strategy(self, loading_strategy: LoadingStrategy) -> Self {
+        Self {
+            loading_strategy,
+            ..self
+        }
     }
 }
 
