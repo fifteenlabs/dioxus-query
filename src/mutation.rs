@@ -320,15 +320,19 @@ impl<Q: MutationCapability> UseMutation<Q> {
     ///
     /// For a `sync` version use [UseMutation::mutate].
     pub async fn mutate_async(&self, keys: Q::Keys) -> MutationReader<Q> {
-        let storage = consume_context::<MutationsStorage<Q>>();
+        let mut storage = consume_context::<MutationsStorage<Q>>();
 
         let mutation = self.mutation.peek().clone();
-        let mutation_data = storage
+        let mutation_data = if let Some(existing) = storage
             .storage
             .peek_unchecked()
             .get(&mutation)
             .cloned()
-            .unwrap();
+        {
+            existing
+        } else {
+            storage.insert_or_get_mutation(mutation.clone())
+        };
 
         // Run the mutation
         MutationsStorage::run(&mutation, &mutation_data, keys).await;
@@ -342,15 +346,19 @@ impl<Q: MutationCapability> UseMutation<Q> {
     ///
     /// For an `async` version use [UseMutation::mutate_async].
     pub fn mutate(&self, keys: Q::Keys) {
-        let storage = consume_context::<MutationsStorage<Q>>();
+        let mut storage = consume_context::<MutationsStorage<Q>>();
 
         let mutation = self.mutation.peek().clone();
-        let mutation_data = storage
+        let mutation_data = if let Some(existing) = storage
             .storage
             .peek_unchecked()
             .get(&mutation)
             .cloned()
-            .unwrap();
+        {
+            existing
+        } else {
+            storage.insert_or_get_mutation(mutation.clone())
+        };
 
         // Run the mutation
         spawn(async move {
