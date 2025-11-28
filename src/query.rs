@@ -10,14 +10,12 @@ use std::{
     time::Duration,
 };
 
-use ::warnings::Warning;
-use dioxus_lib::prelude::Task;
-use dioxus_lib::prelude::*;
-use dioxus_lib::signals::{Readable, Writable};
-use dioxus_lib::{
-    hooks::{use_memo, use_reactive},
-    signals::CopyValue,
+use dioxus::dioxus_core::{
+    provide_root_context, spawn_forever, use_drop, ReactiveContext, SuspendedFuture, Task,
 };
+use dioxus::hooks::{use_memo, use_reactive};
+use dioxus::prelude::*;
+use dioxus::signals::CopyValue;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::Notify;
 #[cfg(not(target_family = "wasm"))]
@@ -268,8 +266,7 @@ impl<Q: QueryCapability> QueriesStorage<Q> {
                     // Run the query
                     QueriesStorage::<Q>::run_queries(&[(&query_clone, &query_data_clone)]).await;
                 }
-            })
-            .expect("Failed to spawn interval task.");
+            });
             *interval_task = Some((interval, task));
         }
 
@@ -295,14 +292,14 @@ impl<Q: QueryCapability> QueriesStorage<Q> {
 
         // Spawn clean up task if there no more reactive contexts
         if query_data.reactive_contexts.lock().unwrap().is_empty() {
-            *query_data.clean_task.borrow_mut() = spawn_forever(async move {
+            *query_data.clean_task.borrow_mut() = Some(spawn_forever(async move {
                 // Wait as long as the stale time is configured
                 time::sleep(query.clean_time).await;
 
                 // Finally clear the query
                 let mut storage = storage_clone.write();
                 storage.remove(&query);
-            });
+            }));
         }
     }
 
@@ -357,14 +354,14 @@ impl<Q: QueryCapability> QueriesStorage<Q> {
 
         // Spawn clean up task if there no more reactive contexts
         if query_data.reactive_contexts.lock().unwrap().is_empty() {
-            *query_data.clean_task.borrow_mut() = spawn_forever(async move {
+            *query_data.clean_task.borrow_mut() = Some(spawn_forever(async move {
                 // Wait as long as the stale time is configured
                 time::sleep(query.clean_time).await;
 
                 // Finally clear the query
                 let mut storage = storage.storage.write();
                 storage.remove(&query);
-            });
+            }));
         }
 
         QueryReader {
@@ -829,9 +826,6 @@ impl<Q: QueryCapability> UseQuery<Q> {
         Q::Ok: Clone,
         Q::Err: Clone,
     {
-        let _allow_write_in_component_body =
-            ::warnings::Allow::new(warnings::signal_write_in_component_body::ID);
-
         let storage = consume_context::<QueriesStorage<Q>>();
 
         // Read the query FIRST to avoid borrow conflicts
